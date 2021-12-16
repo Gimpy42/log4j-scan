@@ -19,31 +19,33 @@ import json
 import random
 from uuid import uuid4
 from base64 import b64encode
-#from Crypto.Cipher import AES, PKCS1_OAEP
-#from Crypto.PublicKey import RSA
-#from Crypto.Hash import SHA256
-from Cryptodome.Cipher import AES, PKCS1_OAEP
-from Cryptodome.PublicKey import RSA
-from Cryptodome.Hash import SHA256
-
+from Crypto.Cipher import AES, PKCS1_OAEP
+from Crypto.PublicKey import RSA
+from Crypto.Hash import SHA256
 from termcolor import cprint
 
+# Mod from Multiprocess and IP range #58
+import ipaddress
+import subprocess
+import multiprocessing
+import functools
 
-# Disable SSL warnings
-try:
-    import requests.packages.urllib3
-    requests.packages.urllib3.disable_warnings()
-except Exception:
-    pass
-
-
-cprint('[•] CVE-2021-44228 - Apache Log4j RCE Scanner', "green")
-cprint('[•] Scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.', "yellow")
-cprint('[•] Secure your External Attack Surface with FullHunt.io.', "yellow")
-
-if len(sys.argv) <= 1:
-    print('\n%s -h for help.' % (sys.argv[0]))
-    exit(0)
+# Mod from Multiprocess and IP range #58
+## Disable SSL warnings
+#try:
+#    import requests.packages.urllib3
+#    requests.packages.urllib3.disable_warnings()
+#except Exception:
+#    pass
+#
+#
+#cprint('[•] CVE-2021-44228 - Apache Log4j RCE Scanner', "green")
+#cprint('[•] Scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.', "yellow")
+#cprint('[•] Secure your External Attack Surface with FullHunt.io.', "yellow")
+#
+#if len(sys.argv) <= 1:
+#    print('\n%s -h for help.' % (sys.argv[0]))
+#    exit(0)
 
 
 default_headers = {
@@ -68,9 +70,24 @@ parser.add_argument("-u", "--url",
                     dest="url",
                     help="Check a single URL.",
                     action='store')
+
+# Mod from Multiprocess and IP range #58
+parser.add_argument("-r", "--range",
+                    dest="range",
+                    help="network range in a.b.c.d/pq format",
+                    action='store')
+parser.add_argument("--ports-list",
+                    dest="portslist",
+                    help="list of ports e.g. [80,8080,443] to test against each IP of range",
+                    action='store')
+parser.add_argument("--protocols-list",
+                    dest="protocolslist",
+                    help="list of url prefix e.g. [http://,https://] to test against each IP of range",
+                    action='store')
+
 parser.add_argument("-p", "--proxy",
                     dest="proxy",
-                    help="send requests through proxy",
+                    help="Send requests through proxy. proxy should be specified in the format supported by requests (http[s]://<proxy-ip>:<proxy-port>)",
                     action='store')
 parser.add_argument("-l", "--list",
                     dest="usedlist",
@@ -293,6 +310,7 @@ def scan_url(url, callback_host):
                                  proxies=proxies)
             except Exception as e:
                 cprint(f"EXCEPTION: {e}")
+                cprint("the unreached target won't be scanned", "yellow")
 
         if args.request_type.upper() == "POST" or args.run_all_tests:
             try:
@@ -308,6 +326,7 @@ def scan_url(url, callback_host):
                                  proxies=proxies)
             except Exception as e:
                 cprint(f"EXCEPTION: {e}")
+                cprint("the unreached target won't be scanned", "yellow")
 
             try:
                 # JSON body
@@ -322,9 +341,105 @@ def scan_url(url, callback_host):
                                  proxies=proxies)
             except Exception as e:
                 cprint(f"EXCEPTION: {e}")
+                cprint("the unreached target won't be scanned", "yellow")
 
+## Mod from Multiprocess and IP range #58
+#   nice multiprocessing print ordering mecanism taken from here :
+#   https://stackoverflow.com/questions/44488645/python-multiprocessing-subprocesses-with-ordered-printing
+#
+def std_wrapper(func):
+    @functools.wraps(func)  # we need this to unravel the target function name
+    def caller(*args, **kwargs):  # and now for the wrapper, nothing new here
+        try:
+            from StringIO import StringIO  # ... for Python 2.x compatibility
+        except ImportError:
+            from io import StringIO
+        import sys
+        sys.stdout, sys.stderr = StringIO(), StringIO()  # use our buffers instead
+        response = None  # in case a call fails
+        try:
+            response = func(*args, **kwargs)  # call our wrapped process function
+        except Exception as e:  # too broad but good enough as an example
+            print(e)  # NOTE: the exception is also printed to the captured STDOUT
+        # rewind our buffers:
+        sys.stdout.seek(0)
+        sys.stderr.seek(0)
+        # return everything packed as STDOUT, STDERR, PROCESS_RESPONSE | NONE
+        return sys.stdout.read(), sys.stderr.read(), response
+    return caller
+
+@std_wrapper
+def scan_one_ip(url):
+    cmd_output = subprocess.getoutput("python log4j-scan.py -u " + url + " --run-all-test --waf-bypass")
+    return (url, cmd_output)
+
+def scan_ip_range_multicore(protocols,networkrange,ports):
+
+    ip_list = [str(ip) for ip in ipaddress.IPv4Network(networkrange)]
+    url_list = []
+    for up in protocols:
+        for port in ports:
+            for ip in ip_list:
+                url_list.append(up+ip+":"+port)
+
+    print(url_list)
+    exit()
+
+    process_count = int(multiprocessing.cpu_count()*0.75)
+    if (process_count == 0):
+        process_count == 1
+
+    print("starting scan in multicore mode\n")
+    print("maximum of",process_count, "cores will be used which is about 75% of CPU cores availables on this machine will be used\n")
+    print("################################################################################")
+    print("log outputs will be printed after each scanned URL... please be patient...")
+    print("a summary of vulnerable URL's will be printed at the end")
+    print("################################################################################\n")
+
+    workerfunct = functools.partial(scan_one_ip)
+
+    pool = multiprocessing.Pool(process_count)
+
+    vulnerable = []
+
+    for out, err, res in pool.imap_unordered(workerfunct, url_list):
+        print("Process finished :")
+        print("Output :\n{}".format(res[1]))
+        print("################################################################################") 
+        if ("[!!!] Target Affected" in res[1]):
+            vulnerable.append(res[0])
+    pool.close()
+    print("Vulnerable URL list : ", vulnerable)
 
 def main():
+    # Mod from Multiprocess and IP range #58
+    # Disable SSL warnings
+    try:
+        import requests.packages.urllib3
+        requests.packages.urllib3.disable_warnings()
+    except Exception:
+        pass
+
+    cprint('[•] CVE-2021-44228 - Apache Log4j RCE Scanner', "green")
+    cprint('[•] Scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.', "yellow")
+    cprint('[•] Secure your External Attack Surface with FullHunt.io.', "yellow")
+
+    if not args.range:
+        single_main(args)
+    else:
+        if (args.protocolslist):
+            protocolslist = args.protocolslist.lstrip('[').rstrip(']').split(",")
+        else:
+            protocolslist = ['http://']
+        if (args.portslist):
+            portslist = args.portslist.lstrip('[').rstrip(']').split(",")
+        else:
+            portslist = [ '80','443' ]
+        scan_ip_range_multicore(protocolslist,args.range,portslist)
+
+
+def single_main(args):
+
     urls = []
     if args.url:
         urls.append(args.url)
@@ -365,6 +480,7 @@ def main():
     records = dns_callback.pull_logs()
     if len(records) == 0:
         cprint("[•] Targets does not seem to be vulnerable.", "green")
+        cprint("[•] Reachable Targets does not seem to be vulnerable.", "green")
     else:
         cprint("[!!!] Target Affected", "yellow")
         for i in records:
