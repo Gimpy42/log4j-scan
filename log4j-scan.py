@@ -19,9 +19,13 @@ import json
 import random
 from uuid import uuid4
 from base64 import b64encode
-from Crypto.Cipher import AES, PKCS1_OAEP
-from Crypto.PublicKey import RSA
-from Crypto.Hash import SHA256
+#from Crypto.Cipher import AES, PKCS1_OAEP
+#from Crypto.PublicKey import RSA
+#from Crypto.Hash import SHA256
+from Cryptodome.Cipher import AES, PKCS1_OAEP
+from Cryptodome.PublicKey import RSA
+from Cryptodome.Hash import SHA256
+
 from termcolor import cprint
 
 
@@ -194,6 +198,16 @@ class Interactsh:
         self.session.proxies = proxies
         self.register()
 
+    def deregister(self):
+        """
+        : deregister token to save interactsh's servers some free space.
+        """
+        data = {
+            "secret-key": self.secret,
+            "correlation-id": self.correlation_id
+        }
+        requests.post(f"https://{self.server}/deregister", json=data, headers=self.headers, timeout=1, verify=False)
+
     def register(self):
         data = {
             "public-key": self.encoded,
@@ -355,6 +369,7 @@ def main():
         cprint("[!!!] Target Affected", "yellow")
         for i in records:
             cprint(i, "yellow")
+    dns_callback.deregister()
 
 
 if __name__ == "__main__":
