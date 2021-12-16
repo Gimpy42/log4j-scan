@@ -2,10 +2,7 @@
 # coding=utf-8
 # ******************************************************************
 # log4j-scan: A generic scanner for Apache log4j RCE CVE-2021-44228
-# Author:
-# Mazin Ahmed <Mazin at FullHunt.io>
-# Scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.
-# Secure your Attack Surface with FullHunt.io.
+# Inpired from scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.
 # ******************************************************************
 
 import argparse
@@ -23,31 +20,19 @@ from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Hash import SHA256
 from termcolor import cprint
-
-# Mod from Multiprocess and IP range #58
 import ipaddress
 import subprocess
 import multiprocessing
 import functools
+import signal
+import requests
+import queue
+import threading
 
-# Mod from Multiprocess and IP range #58
-## Disable SSL warnings
-#try:
-#    import requests.packages.urllib3
-#    requests.packages.urllib3.disable_warnings()
-#except Exception:
-#    pass
-#
-#
-#cprint('[•] CVE-2021-44228 - Apache Log4j RCE Scanner', "green")
-#cprint('[•] Scanner provided by FullHunt.io - The Next-Gen Attack Surface Management Platform.', "yellow")
-#cprint('[•] Secure your External Attack Surface with FullHunt.io.', "yellow")
-#
-#if len(sys.argv) <= 1:
-#    print('\n%s -h for help.' % (sys.argv[0]))
-#    exit(0)
-
-
+exitFlag = 0
+queueLock = threading.Lock()
+workQueue = queue.Queue()
+threads = []
 default_headers = {
     'User-Agent': 'log4j-scan (https://github.com/mazen160/log4j-scan)',
     # 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36',
@@ -70,8 +55,6 @@ parser.add_argument("-u", "--url",
                     dest="url",
                     help="Check a single URL.",
                     action='store')
-
-# Mod from Multiprocess and IP range #58
 parser.add_argument("-r", "--range",
                     dest="range",
                     help="network range in a.b.c.d/pq format",
@@ -84,7 +67,6 @@ parser.add_argument("--protocols-list",
                     dest="protocolslist",
                     help="list of url prefix e.g. [http://,https://] to test against each IP of range",
                     action='store')
-
 parser.add_argument("-p", "--proxy",
                     dest="proxy",
                     help="Send requests through proxy. proxy should be specified in the format supported by requests (http[s]://<proxy-ip>:<proxy-port>)",
@@ -134,9 +116,69 @@ parser.add_argument("--disable-http-redirects",
                     dest="disable_redirects",
                     help="Disable HTTP redirects. Note: HTTP redirects are useful as it allows the payloads to have higher chance of reaching vulnerable systems.",
                     action='store_true')
+parser.add_argument("-t", "--threads",
+                    dest="threads",
+                    help="Threads number - [Default: 1].",
+                    default=1,
+                    type=int,
+                    action='store')
 
 args = parser.parse_args()
 
+############################################
+############### Ctrl + C ###################
+############################################
+
+def keyboardInterruptHandler(signal, frame):
+    global exitFlag
+    global timeout
+    cprint('[•] Operation was canceled by user !!!', "red")
+    while True:
+        resp = input("[•] Do you want to wait active threads to bring their results? [y/N]").lower()
+        if resp == 'n' or resp == '':
+            exit()
+        elif resp == 'y':
+            timeout = 0.1
+            exitFlag = 1
+            cprint('[•] Waiting for active threads to finish...', "red")
+            break
+
+signal.signal(signal.SIGINT, keyboardInterruptHandler)
+
+############################################
+################ Threads ###################
+############################################
+
+class thread_request (threading.Thread):
+
+    def __init__(self, threadID, q, dns_callback_host, *args, **kwargs):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.q = q
+        self.dns_callback_host = dns_callback_host
+
+    def run(self):
+
+        cprint ("[•] Starting thread %s ... " % (self.threadID))
+        process_request(self.threadID, self.q, self.dns_callback_host)
+        cprint ("[•] Exiting thread %s." % (self.threadID))
+
+def process_request(threadID, q, dns_callback_host):
+    global exitFlag
+    global queueLock
+    while not exitFlag:
+        queueLock.acquire()
+        if not workQueue.empty():
+            url = q.get()
+            queueLock.release()
+            scan_url(url, dns_callback_host)
+
+        else:
+            queueLock.release()
+
+############################################
+################ Exploit ###################
+############################################
 
 proxies = {}
 if args.proxy:
@@ -414,6 +456,8 @@ def scan_ip_range_multicore(protocols,networkrange,ports):
 def main():
     # Mod from Multiprocess and IP range #58
     # Disable SSL warnings
+
+
     try:
         import requests.packages.urllib3
         requests.packages.urllib3.disable_warnings()
@@ -439,6 +483,9 @@ def main():
 
 
 def single_main(args):
+    
+    global exitFlag
+    global workQueue
 
     urls = []
     if args.url:
@@ -466,9 +513,35 @@ def single_main(args):
         dns_callback_host = dns_callback.domain
 
     cprint("[%] Checking for Log4j RCE CVE-2021-44228.", "magenta")
+
+    workQueue = queue.Queue(len(urls))
+
+    # Fill the queue
+    queueLock.acquire()
+
     for url in urls:
-        cprint(f"[•] URL: {url}", "magenta")
-        scan_url(url, dns_callback_host)
+        workQueue.put(url)
+        #cprint(f"[•] URL: {url}", "magenta")
+    queueLock.release()
+
+    # Create new threads
+    for t in range(1,args.threads+1):
+        thread = thread_request(t, workQueue, dns_callback_host)
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
+
+    # Wait for queue to empty
+    while not workQueue.empty() and exitFlag == 0:
+        time.sleep(1)
+        pass
+
+    # Notify threads it's time to exit
+    exitFlag = 1
+
+    # Wait for all threads to complete
+    for t in threads:
+        t.join()
 
     if args.custom_dns_callback_host:
         cprint("[•] Payloads sent to all URLs. Custom DNS Callback host is provided, please check your logs to verify the existence of the vulnerability. Exiting.", "cyan")
